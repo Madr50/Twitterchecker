@@ -273,16 +273,15 @@ class HotmailSupercellChecker:
       self.print_stats()
       start_time=time.time()
   self.print_stats(running=False)
-def main():
+def main(combo_file_path):
  checker=HotmailSupercellChecker()
- file=input(f"{X}Enter combo file:{M}").strip()
  os.system('clear')
  try:
-  checker.run_checker(file)
+  checker.run_checker(combo_file_path)
  except KeyboardInterrupt:
   pass
  except Exception as e:
   pass 
   #print(ed)
 if __name__=="__main__":
- main()
+ main('/home/ubuntu/upload/Pasted_content_07.txt')
