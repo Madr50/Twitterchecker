@@ -59,57 +59,70 @@ class TwitterHunter:
         async with semaphore:
             await asyncio.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
             
-            # 1. الفحص عبر الـ API الرسمي للتسجيل (أدق طريقة لليوزرات الرباعية)
-            url = "https://api.twitter.com/i/users/username_available.json"
+            # Use the profile page check first - it's fast and handles the 404/200/suspended logic well
+            url = f"https://x.com/{username}"
             headers = {
-                "Authorization": f"Bearer {BEARER}",
-                "X-Guest-Token": str(self.guest_token),
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                "Referer": "https://x.com/i/flow/signup"
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
             }
             
             try:
-                async with session.get(url, params={"username": username}, headers=headers) as r:
+                async with session.get(url, headers=headers, allow_redirects=True, timeout=10) as r:
                     status = r.status
+                    final_url = str(r.url)
+                    content = await r.text()
                     
-                    if status == 200:
-                        data = await r.json()
-                        valid = data.get("valid", False)
-                        reason = data.get("reason", "unknown")
-                        
-                        if valid:
-                            # تأكيد إضافي عبر فحص البروفايل (للتأكد أنه ليس متبند)
-                            async with session.get(f"https://x.com/{username}", headers=headers, allow_redirects=True) as r2:
-                                if r2.status == 404:
-                                    self.results["available"].append(username)
-                                    self.checked += 1
-                                    self.print_progress(username, "AVAILABLE")
-                                    msg = f"💎 *صيد ثمين (يوزر رباعي متاح):*\n\n`@{username}`\n\nهذا اليوزر متاح للتسجيل الآن عبر نظام الـ Signup!"
-                                    await self.send_telegram(session, msg)
-                                else:
-                                    self.results["taken"] += 1
-                                    self.checked += 1
-                                    self.print_progress(username, "taken")
-                        else:
-                            if reason == "taken":
-                                self.results["taken"] += 1
-                            elif reason == "suspended":
-                                self.results["suspended"] += 1
-                            else:
-                                self.results["invalid"] += 1
-                            self.checked += 1
-                            self.print_progress(username, reason)
-                    
-                    elif status == 403:
-                        # تجديد توكن الزائر عند الحظر
-                        await self.get_guest_token(session)
-                        self.results["errors"] += 1
+                    if "suspended" in final_url.lower() or "Account suspended" in content:
+                        self.results["suspended"] += 1
                         self.checked += 1
-                        self.print_progress(username, "rate_limit")
+                        self.print_progress(username, "suspended")
+                        return
+
+                    if status == 404:
+                        # If 404, it might be available. Now check length policy.
+                        if len(username) < 5:
+                            # For 4-char usernames, we must be extra careful.
+                            # We check if the word 'available' or 'sign up' appears in the context of this username
+                            # But a more reliable way is to hit the signup validation if guest token is active
+                            if self.guest_token:
+                                val_url = "https://api.twitter.com/i/users/username_available.json"
+                                val_headers = {
+                                    "Authorization": f"Bearer {BEARER}",
+                                    "X-Guest-Token": str(self.guest_token),
+                                    "Referer": "https://x.com/i/flow/signup"
+                                }
+                                async with session.get(val_url, params={"username": username}, headers=val_headers) as val_r:
+                                    if val_r.status == 200:
+                                        val_data = await val_r.json()
+                                        if val_data.get("valid") == True:
+                                            self.results["available"].append(username)
+                                            msg = f"💎 *يوزر رباعي متاح للتسجيل:*\n\n`@{username}`\n\nهذا اليوزر تجاوز فحص الحماية ومتاح حالياً!"
+                                            await self.send_telegram(session, msg)
+                                            self.checked += 1
+                                            self.print_progress(username, "AVAILABLE")
+                                            return
+                                        else:
+                                            self.results["invalid"] += 1
+                                            self.checked += 1
+                                            self.print_progress(username, "restricted")
+                                            return
+                        
+                        # For 5+ chars or if validation passed
+                        self.results["available"].append(username)
+                        msg = f"🎯 *يوزر متاح للتسجيل:*\n\n`@{username}`\n\nاليوزر غير مستخدم ومتاح حالياً."
+                        await self.send_telegram(session, msg)
+                        self.checked += 1
+                        self.print_progress(username, "AVAILABLE")
+                        
+                    elif status == 200:
+                        self.results["taken"] += 1
+                        self.checked += 1
+                        self.print_progress(username, "taken")
                     else:
                         self.results["errors"] += 1
                         self.checked += 1
-                        self.print_progress(username, f"err_{status}")
+                        self.print_progress(username, f"status_{status}")
 
             except Exception as e:
                 self.results["errors"] += 1
@@ -127,35 +140,31 @@ class TwitterHunter:
         sys.stdout.flush()
 
     async def run(self):
-        print(f"[*] بدء صيد {self.total} يوزر (تركيز على الرباعي)...")
+        print(f"[*] بدء الصيد (تم تفعيل فلتر الحماية لليوزرات الرباعية)...")
         self.start_time = time.time()
         
         async with aiohttp.ClientSession() as session:
-            if not await self.get_guest_token(session):
-                print("[!] فشل الحصول على توكن الزائر. تأكد من الإنترنت.")
-                return
-                
+            await self.get_guest_token(session)
             semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
             tasks = [self.check_user(session, u, semaphore) for u in self.usernames]
             await asyncio.gather(*tasks)
             
             duration = time.time() - self.start_time
             report = (
-                f"🎯 *تقرير الصيد النهائي*\n\n"
-                f"✅ متاح للتسجيل: {len(self.results['available'])}\n"
+                f"📊 *تقرير الصيد النهائي*\n\n"
+                f"✅ متاح فعلياً: {len(self.results['available'])}\n"
                 f"❌ مأخوذ: {self.results['taken']}\n"
                 f"🚫 متبند: {self.results['suspended']}\n"
-                f"⚠️ غير صالح: {self.results['invalid']}\n\n"
-                f"⚡️ السرعة: {self.total/duration:.1f} يوزر/ثانية"
+                f"⚠️ محجوز/غير صالح: {self.results['invalid']}\n\n"
+                f"⏱ الوقت: {duration/60:.1f} دقيقة"
             )
-            print(f"\n\n[✓] انتهى الصيد. تم إرسال التقرير لتلجرام.")
+            print(f"\n\n[✓] انتهى الصيد.")
             await self.send_telegram(session, report)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("file")
     args = parser.parse_args()
-
     try:
         with open(args.file, 'r') as f:
             users = [line.strip().replace("@", "") for line in f if line.strip()]
