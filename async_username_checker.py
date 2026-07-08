@@ -2,28 +2,22 @@ import asyncio
 import aiohttp
 import argparse
 import re
-from dateutil import parser
 import time
-import urllib.parse
 import sys
+import random
 
 # ==========================================
-# الإعدادات الأساسية (Configuration)
+# الإعدادات (Configuration)
 # ==========================================
-
-# تم تحديث التوكن الجديد وفك تشفيره لضمان العمل 100%
-RAW_TOKEN = "AAAAAAAAAAAAAAAAAAAAALot%2BgEAAAAALDJdMfecK72FvOTXX%2FYyJLA%2BBY4%3DwQ2HvlIbyt7ijnhNM46iUcYGIxYtuEBuImldL7EKAKaWVLcWo2"
-TOKEN = urllib.parse.unquote(RAW_TOKEN)
 
 # Telegram Configuration
 TG_BOT_TOKEN = "8654290922:AAHHOnPDU60i10z9neTNJq5HdsJw4RmfBbw"
 TG_CHAT_ID = "8989271393"
 
-BATCH_SIZE = 100 
-CONCURRENT_BATCHES = 5 
+CONCURRENT_REQUESTS = 5 # عدد الفحوصات المتزامنة
 
 # ==========================================
-# وظائف تيليجرام (Telegram Functions)
+# وظائف المساعدة (Helper Functions)
 # ==========================================
 
 async def send_telegram_message(session, message):
@@ -34,70 +28,48 @@ async def send_telegram_message(session, message):
             return response.status == 200
     except: return False
 
-# ==========================================
-# وظائف الفحص (Checking Functions)
-# ==========================================
-
-async def check_token_validity(session, token):
-    """يتحقق من أن التوكن يعمل فعلياً مع تويتر قبل بدء الفحص"""
-    # نستخدم يوزر تويتر الرسمي للفحص
-    url = "https://api.twitter.com/2/users/by/username/Twitter"
-    headers = {"Authorization": f"Bearer {token}"}
-    try:
-        async with session.get(url, headers=headers) as response:
-            if response.status == 200:
-                return True, "صالح"
-            elif response.status == 401:
-                return False, "غير صالح (Unauthorized)"
-            elif response.status == 403:
-                return False, "مرفوض (Forbidden - قد يكون الحساب مقيداً)"
-            else:
-                data = await response.json()
-                return False, f"خطأ {response.status}: {data.get('detail', 'Unknown error')}"
-    except Exception as e:
-        return False, f"خطأ في الاتصال: {e}"
-
-async def fetch_batch(session, usernames_chunk, token):
-    url = "https://api.twitter.com/2/users/by"
-    headers = {"Authorization": f"Bearer {token}"}
-    params = {
-        "usernames": ",".join(usernames_chunk),
-        "user.fields": "id,created_at,public_metrics",
+async def get_guest_token(session):
+    """يولد Guest Token من تويتر تماماً كما يفعل المتصفح"""
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
     }
-
     try:
-        async with session.get(url, headers=headers, params=params, timeout=30) as response:
-            if response.status == 401:
-                print("\n\033[1;31m[!!!] التوكن توقف عن العمل فجأة (Unauthorized).\033[0m")
-                sys.exit(1)
-            
-            if response.status == 429:
-                await asyncio.sleep(15)
-                return await fetch_batch(session, usernames_chunk, token)
-
+        async with session.post("https://api.twitter.com/1.1/guest/activate.json", headers={'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7p9R4tJaba37As96K395Z9akgZ6u6U0A4053C'}, timeout=10) as response:
             data = await response.json()
-            results = []
-            
-            # اليوزرات المتاحة هي التي تظهر في قائمة errors مع رسالة "Could not find user"
-            if "errors" in data:
-                for error in data["errors"]:
-                    if "Could not find user" in error.get("detail", ""):
-                        results.append({"username": error.get("resource_id"), "status": "AVAILABLE"})
-            
-            # اليوزرات المحجوزة تظهر في قائمة data
-            if "data" in data:
-                for user in data["data"]:
-                    results.append({"username": user["username"], "status": "TAKEN"})
-                    
-            return results
-    except Exception: return []
+            return data.get("guest_token")
+    except: return None
+
+# ==========================================
+# محرك الفحص (Checking Engine)
+# ==========================================
+
+async def check_username(session, username, guest_token):
+    """يفحص توفر اليوزر عبر واجهة الويب (Guest API)"""
+    url = f"https://twitter.com/i/api/i/users/username_available.json?username={username}"
+    headers = {
+        'Authorization': 'Bearer AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7p9R4tJaba37As96K395Z9akgZ6u6U0A4053C',
+        'X-Guest-Token': guest_token,
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+    }
+    
+    try:
+        async with session.get(url, headers=headers, timeout=10) as response:
+            if response.status == 200:
+                data = await response.json()
+                # إذا كانت القيمة valid هي true، فهذا يعني أن اليوزر متاح
+                return username, data.get("valid", False)
+            elif response.status == 429: # Rate Limit
+                return username, "RATE_LIMIT"
+            else:
+                return username, False
+    except:
+        return username, False
 
 async def main():
     arg_parser = argparse.ArgumentParser()
     arg_parser.add_argument("username_file")
     args = arg_parser.parse_args()
 
-    # قراءة اليوزرات الرباعية فقط
     try:
         with open(args.username_file, 'r') as f:
             usernames = [line.strip() for line in f if len(line.strip()) == 4]
@@ -105,47 +77,52 @@ async def main():
         print("\033[1;31m[!] فشل قراءة الملف.\033[0m"); return
 
     if not usernames:
-        print("\033[1;31m[!] لا توجد يوزرات رباعية صالحة في الملف.\033[0m"); return
+        print("\033[1;31m[!] لا توجد يوزرات رباعية صالحة.\033[0m"); return
 
     async with aiohttp.ClientSession() as session:
-        print("\033[1;34m[+]\033[0m جاري فحص صلاحية التوكن الجديد...")
-        is_valid, message = await check_token_validity(session, TOKEN)
+        print("\033[1;34m[+]\033[0m جاري توليد Guest Token للبدء...")
+        guest_token = await get_guest_token(session)
         
-        if not is_valid:
-            print(f"\033[1;31m[!] التوكن {message}. يرجى مراجعة إعدادات حساب المطور.\033[0m")
+        if not guest_token:
+            print("\033[1;31m[!] فشل توليد التوكن. تأكد من اتصال الإنترنت.\033[0m")
             return
 
-        print("\033[1;32m[✓] التوكن يعمل بنجاح! بدأ الفحص الحقيقي الآن...\033[0m")
-        await send_telegram_message(session, f"🚀 *بدأ الفحص الحقيقي*\nالعدد: `{len(usernames)}` يوزر.\nالحالة: التوكن صالح ✅")
+        print(f"\033[1;32m[✓] تم التوليد بنجاح. بدأ الفحص لـ {len(usernames)} يوزر بدون توكن مطور!\033[0m")
+        await send_telegram_message(session, f"🚀 *بدأ الفحص بطريقة Guest API*\nالعدد: `{len(usernames)}` يوزر.\nالحالة: بدون توكن مطور ✅")
 
         start_time = time.time()
         available_count = 0
-        chunks = [usernames[i:i + BATCH_SIZE] for i in range(0, len(usernames), BATCH_SIZE)]
         
-        semaphore = asyncio.Semaphore(CONCURRENT_BATCHES)
+        semaphore = asyncio.Semaphore(CONCURRENT_REQUESTS)
 
-        async def process_chunk(chunk):
-            nonlocal available_count
+        async def worker(username):
+            nonlocal available_count, guest_token
             async with semaphore:
-                results = await fetch_batch(session, chunk, TOKEN)
-                for r in results:
-                    if r["status"] == "AVAILABLE":
-                        available_count += 1
-                        print(f"\033[1;32m[🎯 صيد!]\033[0m @{r['username']}")
-                        await send_telegram_message(session, f"🎯 *يوزر متاح:* `@{r['username']}`")
+                user, is_available = await check_username(session, username, guest_token)
                 
-                # تحديث العداد على الشاشة
-                current_idx = (usernames.index(chunk[0]) + len(chunk))
-                sys.stdout.write(f"\r\033[1;34m[*] تقدم الفحص:\033[0m {current_idx}/{len(usernames)}")
-                sys.stdout.flush()
+                if is_available == "RATE_LIMIT":
+                    # إذا حدث ضغط، نحدث التوكن وننتظر قليلاً
+                    guest_token = await get_guest_token(session) or guest_token
+                    await asyncio.sleep(2)
+                    return await worker(username)
+                
+                if is_available:
+                    available_count += 1
+                    print(f"\033[1;32m[🎯 صيد!]\033[0m @{user}")
+                    await send_telegram_message(session, f"🎯 *يوزر متاح:* `@{user}`")
+                
+                # تحديث العداد
+                idx = usernames.index(username) + 1
+                if idx % 10 == 0 or idx == len(usernames):
+                    sys.stdout.write(f"\r\033[1;34m[*] تقدم الفحص:\033[0m {idx}/{len(usernames)}")
+                    sys.stdout.flush()
 
-        tasks = [process_chunk(c) for c in chunks]
+        tasks = [worker(u) for u in usernames]
         await asyncio.gather(*tasks)
 
         duration = time.time() - start_time
-        final_msg = f"🏁 *انتهى الفحص*\nالمتاحة: `{available_count}`\nالوقت: `{duration:.2f}s`"
-        await send_telegram_message(session, final_msg)
-        print(f"\n\n\033[1;32m[✓] اكتملت المهمة. تم إيجاد {available_count} يوزر متاح.\033[0m")
+        print(f"\n\n\033[1;32m[✓] اكتمل الفحص. المتاح: {available_count}. الوقت: {duration:.2f}s\033[0m")
+        await send_telegram_message(session, f"🏁 *انتهى الفحص*\nالمتاحة: `{available_count}`")
 
 if __name__ == "__main__":
     asyncio.run(main())
